@@ -16,6 +16,7 @@ from loss_functions import compute_depth_errors, compute_pose_errors
 from inverse_warp import pose_vec2mat
 from logger import TermLogger, AverageMeter
 from tensorboardX import SummaryWriter
+from estimate_essential_matrix import GetEssentialMatrix
 
 parser = argparse.ArgumentParser(description='Structure from Motion Learner training on KITTI and CityScapes Dataset',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -282,13 +283,15 @@ def train(args, train_loader, disp_net, pose_exp_net, optimizer, epoch_size, log
         ref_imgs = [img.to(device) for img in ref_imgs]
         intrinsics = intrinsics.to(device)
 
+        E = GetEssentialMatrix(ref_imgs, intrinsics)
+        
         # compute output
         disparities = disp_net(tgt_img)
         depth = [1/disp for disp in disparities]
         explainability_mask, pose = pose_exp_net(tgt_img, ref_imgs)
 
         loss_1, warped, diff = photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
-                                                               depth, explainability_mask, pose,
+                                                               depth, explainability_mask, pose, E,
                                                                args.rotation_mode, args.padding_mode)
         if w2 > 0:
             loss_2 = explainability_loss(explainability_mask)
@@ -365,9 +368,11 @@ def validate_without_gt(args, val_loader, disp_net, pose_exp_net, epoch, logger,
         depth = 1/disp
         explainability_mask, pose = pose_exp_net(tgt_img, ref_imgs)
 
+        E = GetEssentialMatrix(ref_imgs, intrinsics)
+
         loss_1, warped, diff = photometric_reconstruction_loss(tgt_img, ref_imgs,
                                                                intrinsics, depth,
-                                                               explainability_mask, pose,
+                                                               explainability_mask, pose, E,
                                                                args.rotation_mode, args.padding_mode)
         loss_1 = loss_1.item()
         if w2 > 0:

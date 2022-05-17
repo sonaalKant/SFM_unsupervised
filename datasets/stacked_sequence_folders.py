@@ -30,7 +30,7 @@ class SequenceFolder(data.Dataset):
         random.seed(seed)
         self.root = Path(root)
         self.samples = []
-        frames_list_path = self.root/'train.txt' if train else self.root/'val.txt'
+        frames_list_path = self.root/'SfMLearnerDatatrain.txt' if train else self.root/'SfMLearnerDataval.txt'
         self.scenes = self.root.dirs()
         self.sequence_length = sequence_length
         for frame_path in open(frames_list_path):

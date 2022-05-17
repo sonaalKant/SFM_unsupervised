@@ -8,7 +8,7 @@ from inverse_warp import inverse_warp
 
 def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
                                     depth, explainability_mask, pose,
-                                    rotation_mode='euler', padding_mode='zeros'):
+                                    E, rotation_mode='euler', padding_mode='zeros'):
     def one_scale(depth, explainability_mask):
         assert(explainability_mask is None or depth.size()[2:] == explainability_mask.size()[2:])
         assert(pose.size(1) == len(ref_imgs))
@@ -27,17 +27,22 @@ def photometric_reconstruction_loss(tgt_img, ref_imgs, intrinsics,
         for i, ref_img in enumerate(ref_imgs_scaled):
             current_pose = pose[:, i]
 
-            ref_img_warped, valid_points = inverse_warp(ref_img, depth[:,0], current_pose,
-                                                        intrinsics_scaled,
+            ref_img_warped, valid_points, weights = inverse_warp(ref_img, depth[:,0], current_pose,
+                                                        intrinsics_scaled, E,
                                                         rotation_mode, padding_mode)
+            
             diff = (tgt_img_scaled - ref_img_warped) * valid_points.unsqueeze(1).float()
+
+            diff = diff * weights[:,None,:,:]
 
             if explainability_mask is not None:
                 diff = diff * explainability_mask[:,i:i+1].expand_as(diff)
 
             reconstruction_loss += diff.abs().mean()
-            assert((reconstruction_loss == reconstruction_loss).item() == 1)
-
+            try:
+                assert((reconstruction_loss == reconstruction_loss).item() == 1)
+            except:
+                import pdb;pdb.set_trace()
             warped_imgs.append(ref_img_warped[0])
             diff_maps.append(diff[0])
 

@@ -37,8 +37,7 @@ def pixel2cam(depth, intrinsics_inv):
         set_id_grid(depth)
     current_pixel_coords = pixel_coords[..., :h, :w].expand(b, 3, h, w).reshape(b, 3, -1)  # [B, 3, H*W]
     cam_coords = (intrinsics_inv @ current_pixel_coords).reshape(b, 3, h, w)
-    return cam_coords * depth.unsqueeze(1)
-
+    return cam_coords * depth.unsqueeze(1), cam_coords.reshape(b, 3, -1)
 
 def cam2pixel(cam_coords, proj_c2p_rot, proj_c2p_tr):
     """Transform coordinates in the camera frame to the pixel frame.
@@ -62,11 +61,13 @@ def cam2pixel(cam_coords, proj_c2p_rot, proj_c2p_tr):
     Y = pcoords[:, 1]
     Z = pcoords[:, 2].clamp(min=1e-3)
 
+    coords = torch.stack([X, Y , Z], dim=2).permute(0,2,1) # [B, H*W, 3]
+
     X_norm = 2*(X / Z)/(w-1) - 1  # Normalized, -1 if on extreme left, 1 if on extreme right (x = w-1) [B, H*W]
     Y_norm = 2*(Y / Z)/(h-1) - 1  # Idem [B, H*W]
 
     pixel_coords = torch.stack([X_norm, Y_norm], dim=2)  # [B, H*W, 2]
-    return pixel_coords.reshape(b, h, w, 2)
+    return pixel_coords.reshape(b, h, w, 2), coords
 
 
 def euler2mat(angle):
@@ -152,7 +153,7 @@ def pose_vec2mat(vec, rotation_mode='euler'):
     return transform_mat
 
 
-def inverse_warp(img, depth, pose, intrinsics, rotation_mode='euler', padding_mode='zeros'):
+def inverse_warp(img, depth, pose, intrinsics, E, rotation_mode='euler', padding_mode='zeros'):
     """
     Inverse warp a source image to the target image plane.
 
@@ -172,7 +173,7 @@ def inverse_warp(img, depth, pose, intrinsics, rotation_mode='euler', padding_mo
 
     batch_size, _, img_height, img_width = img.size()
 
-    cam_coords = pixel2cam(depth, intrinsics.inverse())  # [B,3,H,W]
+    cam_coords, target_coords_normalized = pixel2cam(depth, intrinsics.inverse())  # [B,3,H,W]
 
     pose_mat = pose_vec2mat(pose, rotation_mode)  # [B,3,4]
 
@@ -180,9 +181,22 @@ def inverse_warp(img, depth, pose, intrinsics, rotation_mode='euler', padding_mo
     proj_cam_to_src_pixel = intrinsics @ pose_mat  # [B, 3, 4]
 
     rot, tr = proj_cam_to_src_pixel[..., :3], proj_cam_to_src_pixel[..., -1:]
-    src_pixel_coords = cam2pixel(cam_coords, rot, tr)  # [B,H,W,2]
+    
+    src_pixel_coords, src_coords = cam2pixel(cam_coords, rot, tr)  # [B,H,W,2]
+    src_coords_normalized = (intrinsics.inverse() @ src_coords).reshape(batch_size, 3, -1)
+
+    with torch.no_grad():
+        weights = list()
+        for i in range(batch_size):
+            k = (src_coords_normalized[i].T[:,None,:] @ E[i,None,:,:]) @ target_coords_normalized[i].T[:,:,None]
+            k = torch.exp(torch.abs(k))
+            weights.append(k.view(1,img_height, img_width))
+        
+        weights = torch.cat(weights, dim=0)
+        weights = torch.clamp(weights, min=0, max=3)
+
     projected_img = F.grid_sample(img, src_pixel_coords, padding_mode=padding_mode, align_corners=True)
 
     valid_points = src_pixel_coords.abs().max(dim=-1)[0] <= 1
 
-    return projected_img, valid_points
+    return projected_img, valid_points, weights
